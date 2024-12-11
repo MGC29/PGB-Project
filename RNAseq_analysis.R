@@ -84,4 +84,121 @@ EnhancedVolcano(et$table,
                 legendLabSize = 12,
                 legendPosition = "bottom")
 
+# STEP 4: Represent significant features with heatmap
+library(pheatmap)
+library(RColorBrewer)
+
+# First we want to obtain the values of the significant feature.
+hits <- et$table[sig_genes, ]
+
+# Then we want to order the hits from the more down expressed to the most over expressed.
+order_hits <- order(hits$logFC)
+final_order <- c()
+for (i in 1:length(order_hits)){
+  final_order[i] <- row.names(hits[order_hits[i],])
+}
+
+# Then we will read the annotations we have compiled for each significant feature.
+# The file contains the type of feature, function and relation to neural function. 
+# The table is available in the annexes of the written project. 
+annotations <- read.csv("significant_genes_anot.csv", sep=",",
+                        header=T,dec=".", stringsAsFactors = F)
+row.names(annotations) <- annotations$hgnc_symbol
+colnames(annotations)[4] <- "Relation to neural function"
+
+# Here we declare the colours we want our annotations to have.  
+colours <- list(
+  "Relation to neural function" = c(
+    "Synapse" = "#d7191c", "Neurogenesis" = "#fdae61",
+    "ND" = "#ffffbf", "Immunological synapses" = "#a6d96a",
+    "Action potential" = "#1a9641"
+  ), 
+  "Type" = c(
+    "Protein coding" = "#998ec3", "ND" = "#ffffbf", "lncRNA" =  "#f1a340"
+  )
+)
+
+heatcol<-colorRampPalette(c("blue", "white","red"), space = "rgb")
+
+# Here we plot the heatmap 
+heatmap <- pheatmap(as.matrix(cpm.matrix[final_order, ]),
+          main = "Significantly expressed genes",
+          col = heatcol(256),
+          cluster_rows = F, 
+          clustering_method = "ward.D2",
+          clustering_distance_cols = "euclidean",
+          scale = "row", colCol = heatcol, 
+          cexRow = 0.5, cexCol = 0.8, show_rownames = T,
+          treeheight_row = 0,
+          annotation_row = annotations[, c(2,4)], 
+          annotation_colors = colours
+)
+
+# With this function we can save the plot as a pdf
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+save_pheatmap_pdf(heatmap, "Heatmap_significant_genes")
+
+# STEP 5: GSEA
+library(biomaRt)
+library(dplyr)
+library(clusterProfiler)
+library(stringr)
+library("org.Mm.eg.db", character.only = TRUE)
+ensembl = useEnsembl(biomart="ensembl", dataset="mmusculus_gene_ensembl")
+
+# First we need the ENSEMBL IDs of our features 
+genes <- getBM(attributes=c('ensembl_gene_id', "mgi_symbol"), 
+               filters ='mgi_symbol', values = row.names(et$table), 
+               mart = ensembl)
+# However for some reason some of the IDs are duplicated and we have to remove them.
+genes <- genes[!duplicated(genes$mgi_symbol),]
+
+# Then we want to get the logFC of our features and order them from higher to lower.
+logFC <- et$table[row.names(et$table) %in% genes$mgi_symbol, 1]
+names(logFC) <- genes$ensembl_gene_id
+logFC = sort(logFC, decreasing = TRUE)
+
+# Here we perform the gene set expression analysis 
+gse <- gseGO(geneList=logFC, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = "org.Mm.eg.db", 
+             pAdjustMethod = "none")
+
+# Because we known NEUROD2 is involved in synapse formation, we want to obtain
+# those pathways that are involved in some way in synapse. 
+library(forcats)
+library("viridis")
+synapsis <- grep("*synap*", gse@result$Description)
+synapsis <- as.data.frame(gse@result[synapsis,])
+
+# Because we want to plot the pathways according to their enrichment score, we want
+# to create a new column that will hold their "order".
+order <- order(synapsis$enrichmentScore, decreasing = FALSE)
+for (i in 1:length(order)){
+  synapsis[order[i], 13] <- i
+}
+colnames(synapsis)[13] <- "Order"
+synapsis$Description = str_to_title(synapsis$Description)
+
+# Here we plot the pathways 
+ggplot(data=synapsis, aes(x = reorder(Description, -Order), y = enrichmentScore, fill = p.adjust)) +
+  geom_bar(stat="identity") +
+  scale_y_continuous(name = "Enrichment Score") +
+  scale_x_discrete(name = "") +
+  scale_fill_gradient(low="red", high="blue", name = "Adjusted p-value") + coord_flip() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "grey"),
+        axis.text = element_text(color="black"))
 
